@@ -1,0 +1,6 @@
+# generated result files
+result/*.txt
+result/*.csv
+
+# keep result directory
+!result/.gitkeep
