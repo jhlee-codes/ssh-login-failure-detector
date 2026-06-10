@@ -18,6 +18,7 @@ total_failed=$(echo "$failed_ips" | grep -c .)
 unique_ips=$(echo "$failed_ips" | sort -u | grep -c .)
 
 suspicious_count=0
+success_after_failure_count=0
 
 {
     echo "=================================================="
@@ -35,7 +36,7 @@ suspicious_count=0
     echo "로그인 실패 발생 IP 수   : $unique_ips"
     echo
     echo "--------------------------------------------------"
-    echo "[탐지 결과]"
+    echo "[탐지 결과 - 반복 로그인 실패]"
 } > "$RESULT_FILE"
 
 while read -r count ip
@@ -72,9 +73,84 @@ fi
 {
     echo
     echo "--------------------------------------------------"
+    echo "[탐지 결과 - 실패 후 성공 로그인]"
+} >> "$RESULT_FILE"
+
+while IFS='|' read -r ip user method fail_count login_time
+do
+    if [ -n "$ip" ]; then
+        success_after_failure_count=$((success_after_failure_count + 1))
+
+        {
+            echo
+            echo "[HIGH] 실패 후 성공 로그인 탐지"
+            echo "IP 주소       : $ip"
+            echo "성공 계정     : $user"
+            echo "인증 방식     : $method"
+            echo "이전 실패 횟수 : $fail_count"
+            echo "성공 시간     : $login_time"
+            echo "탐지 사유     : 동일 IP에서 ${THRESHOLD}회 이상 로그인 실패 후 성공 로그인 발생"
+            echo "권장 대응     : 해당 계정 로그인 이력 확인, 비밀번호 변경 검토, 접속 IP 신뢰 여부 확인"
+        } >> "$RESULT_FILE"
+    fi
+done < <(
+    awk -v threshold="$THRESHOLD" '
+    /Failed password/ {
+        ip = ""
+        for (i = 1; i <= NF; i++) {
+            if ($i == "from" && $(i+2) == "port") {
+                ip = $(i+1)
+                break
+            }
+        }
+
+        if (ip != "") {
+            fail_count[ip]++
+        }
+    }
+
+    /Accepted (password|publickey)/ {
+        ip = ""
+        user = "-"
+        method = "-"
+        login_time = $1 " " $2 " " $3
+
+        for (i = 1; i <= NF; i++) {
+            if ($i == "Accepted") {
+                method = $(i+1)
+            }
+
+            if ($i == "for") {
+                user = $(i+1)
+            }
+
+            if ($i == "from" && $(i+2) == "port") {
+                ip = $(i+1)
+            }
+        }
+
+        if (ip != "" && fail_count[ip] >= threshold && reported[ip] != 1) {
+            print ip "|" user "|" method "|" fail_count[ip] "|" login_time
+            reported[ip] = 1
+        }
+    }
+    ' "$LOG_FILE"
+)
+
+if [ "$success_after_failure_count" -eq 0 ]; then
+    {
+        echo
+        echo "[정상] 반복 실패 후 성공 로그인한 IP가 없습니다."
+    } >> "$RESULT_FILE"
+fi
+
+{
+    echo
+    echo "--------------------------------------------------"
     echo "[최종 결과]"
-    echo "의심 IP 수 : $suspicious_count"
-    echo "결과 파일  : $RESULT_FILE"
+    echo "반복 실패 의심 IP 수       : $suspicious_count"
+    echo "실패 후 성공 로그인 건수   : $success_after_failure_count"
+    echo "결과 파일                  : $RESULT_FILE"
     echo "=================================================="
 } >> "$RESULT_FILE"
 
